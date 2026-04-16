@@ -24,7 +24,7 @@ let scanLock = false;
 function timeframeToFlowPeriod(timeframe) {
   const allowed = new Set(config.supportedFlowPeriods);
   if (allowed.has(timeframe)) return timeframe;
-  if (["1m", "3m"].includes(timeframe)) return "5m";
+  if (["1m"].includes(timeframe)) return "5m";
   if (timeframe === "8h") return "6h";
   if (timeframe === "3d" || timeframe === "1w") return "1d";
   return "1h";
