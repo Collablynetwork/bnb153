@@ -4,13 +4,22 @@ const config = require("./config");
 const defaultPairs = require("./pair");
 
 function ensureDir(dirPath) {
+  if (typeof dirPath !== "string" || !dirPath.trim()) {
+    throw new Error(`Invalid directory path: ${dirPath}`);
+  }
+
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
 function ensureJsonFile(filePath, defaultValue) {
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    throw new Error(`Invalid JSON file path: ${filePath}`);
+  }
+
   ensureDir(path.dirname(filePath));
+
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
   }
@@ -28,7 +37,7 @@ function readJson(filePath, defaultValue = null) {
 }
 
 function writeJson(filePath, data) {
-  ensureDir(path.dirname(filePath));
+  ensureJsonFile(filePath, Array.isArray(data) ? [] : {});
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
@@ -56,27 +65,59 @@ function filterToAllowedPairs(pairs) {
   return uniqueUpper(pairs).filter((pair) => allowed.has(pair));
 }
 
+function getStoragePaths() {
+  const storageDir = config.storageDir || path.join(__dirname, "storage");
+  const strategiesDir = config.strategiesDir || path.join(storageDir, "strategies");
+
+  return {
+    storageDir,
+    strategiesDir,
+    pairsPath: config.pairsPath || path.join(storageDir, "pairs.json"),
+    scoreStatePath: config.scoreStatePath || path.join(storageDir, "score-state.json"),
+    activeSignalsPath: config.activeSignalsPath || path.join(storageDir, "active-signals.json"),
+    dryRunPositionsPath: config.dryRunPositionsPath || path.join(storageDir, "dryrun-positions.json"),
+    closedTradesPath: config.closedTradesPath || path.join(storageDir, "closed-trades.json"),
+    learnedPumpsPath: config.learnedPumpsPath || path.join(storageDir, "learned-pumps.json"),
+    internalSignalHistoryPath:
+      config.internalSignalHistoryPath || path.join(storageDir, "internal-signal-history.json"),
+    strategySettingsPath:
+      config.strategySettingsPath || path.join(storageDir, "strategy-settings.json"),
+    strategiesIndexPath: config.strategiesIndexPath || path.join(strategiesDir, "index.json"),
+  };
+}
+
 function ensureStorage() {
-  ensureDir(config.storageDir || path.join(__dirname, "storage"));
-  ensureDir(config.strategiesDir);
-  ensureJsonFile(config.pairsPath, getAllowedPairs());
-  ensureJsonFile(config.scoreStatePath, {});
-  ensureJsonFile(config.activeSignalsPath, {});
-  ensureJsonFile(config.dryRunPositionsPath, []);
-  ensureJsonFile(config.closedTradesPath, []);
-  ensureJsonFile(config.learnedPumpsPath, []);
-  ensureJsonFile(config.strategiesIndexPath, []);
+  const paths = getStoragePaths();
+
+  ensureDir(paths.storageDir);
+  ensureDir(paths.strategiesDir);
+  ensureJsonFile(paths.pairsPath, getAllowedPairs());
+  ensureJsonFile(paths.scoreStatePath, {});
+  ensureJsonFile(paths.activeSignalsPath, {});
+  ensureJsonFile(paths.dryRunPositionsPath, []);
+  ensureJsonFile(paths.closedTradesPath, []);
+  ensureJsonFile(paths.learnedPumpsPath, []);
+  ensureJsonFile(paths.internalSignalHistoryPath, {
+    events: [],
+    lastByPair: {},
+  });
+  ensureJsonFile(paths.strategySettingsPath, {
+    keepRecentDays: Number(config.defaultStrategyRetentionDays || 3),
+  });
+  ensureJsonFile(paths.strategiesIndexPath, []);
 }
 
 function getWatchedPairs() {
-  const stored = readJson(config.pairsPath, getAllowedPairs()) || [];
+  const paths = getStoragePaths();
+  const stored = readJson(paths.pairsPath, getAllowedPairs()) || [];
   const filtered = filterToAllowedPairs(stored);
   return filtered.length ? filtered : getAllowedPairs();
 }
 
 function saveWatchedPairs(pairs) {
+  const paths = getStoragePaths();
   const normalized = filterToAllowedPairs(pairs).sort();
-  writeJson(config.pairsPath, normalized);
+  writeJson(paths.pairsPath, normalized);
   return normalized;
 }
 
@@ -84,6 +125,7 @@ module.exports = {
   ensureDir,
   ensureJsonFile,
   ensureStorage,
+  getStoragePaths,
   readJson,
   writeJson,
   appendJsonArray,

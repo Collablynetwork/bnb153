@@ -9,6 +9,7 @@ const {
   learnAndPersist,
   loadStrategies,
   rebuildStrategiesIndexFromFiles,
+  getStrategyRetentionDays,
 } = require("./strategyLearner");
 const { matchStrategiesForPair } = require("./similarity");
 const signalEngine = require("./signals");
@@ -181,9 +182,9 @@ async function buildFeatureStoreForPairs(pairs) {
   return featureStore;
 }
 
-function recentEventsOnly(events) {
-  const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
-  return events.filter((e) => new Date(e.timestamp).getTime() >= threeDaysAgo);
+function recentEventsOnly(events, retentionDays = getStrategyRetentionDays()) {
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  return events.filter((e) => new Date(e.timestamp).getTime() >= cutoffMs);
 }
 
 function extractRegimeSupport(tfMap, direction) {
@@ -355,7 +356,8 @@ async function runScan(options = {}) {
 
     const featureStore = await buildFeatureStoreForPairs(scanPairs);
 
-    let recentLeaders = recentEventsOnly(findRecentPumpLeaders(featureStore));
+    const retentionDays = getStrategyRetentionDays();
+    let recentLeaders = recentEventsOnly(findRecentPumpLeaders(featureStore), retentionDays);
     recentLeaders = recentLeaders.map((event) => ({
       ...event,
       regimeSupportScore: extractRegimeSupport(featureStore[event.pair], event.direction),
@@ -407,7 +409,8 @@ async function runScan(options = {}) {
       }
     }
 
-    const topCandidates = dedupeCandidates(candidates).slice(0, 25);
+    const allCandidates = dedupeCandidates(candidates);
+    const topCandidates = allCandidates.slice(0, 25);
 
     state.writeJson(config.scoreStatePath, {
       generatedAt: new Date().toISOString(),
@@ -417,26 +420,46 @@ async function runScan(options = {}) {
       candidates: topCandidates,
     });
 
-    if (!options.suppressSignals) {
-      await signalEngine.dispatchSignals(
-        bot,
-        options.chatId || config.telegramChatId,
-        topCandidates
-      );
-    }
-
     const prices = {};
     for (const pair of scanPairs) {
       const mark = featureStore[pair]?.["1m"]?.features?.currentClose;
       if (Number.isFinite(mark)) prices[pair] = mark;
     }
 
+    const forcedClosures = signalEngine.evaluateInternalMarketClosures(prices, allCandidates);
+    if (forcedClosures.updates.length) {
+      await signalEngine.dispatchTradeUpdates(
+        bot,
+        options.chatId || config.telegramChatId,
+        forcedClosures.updates
+      );
+    }
+
+    if (!options.suppressSignals) {
+      const prioritySignalKeys = (forcedClosures.priorityCandidates || []).map((candidate) =>
+        signalEngine.buildSignalKey(candidate)
+      );
+      const dispatchCandidates = [
+        ...(forcedClosures.priorityCandidates || []),
+        ...topCandidates,
+      ];
+
+      await signalEngine.dispatchSignals(
+        bot,
+        options.chatId || config.telegramChatId,
+        dispatchCandidates,
+        { prioritySignalKeys }
+      );
+    }
+
     const updates = dryrun.evaluateTargetsAndStops(prices);
-    await signalEngine.dispatchTradeUpdates(
-      bot,
-      options.chatId || config.telegramChatId,
-      updates
-    );
+    if (updates.length) {
+      await signalEngine.dispatchTradeUpdates(
+        bot,
+        options.chatId || config.telegramChatId,
+        updates
+      );
+    }
 
     return {
       skipped: false,
@@ -466,7 +489,12 @@ telegram.registerHandlers(bot, { runScan });
 
 async function bootstrap() {
   if (typeof rebuildStrategiesIndexFromFiles === "function") {
-    rebuildStrategiesIndexFromFiles();
+    const rebuilt = rebuildStrategiesIndexFromFiles();
+    console.log("Strategy retention cleanup:", {
+      retentionDays: rebuilt.retentionDays,
+      keptStrategies: rebuilt.length,
+      removedStrategies: rebuilt.removedFiles.length,
+    });
   } else {
     console.warn("rebuildStrategiesIndexFromFiles export missing, skipping index rebuild.");
   }
